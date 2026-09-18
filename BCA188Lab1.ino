@@ -1,49 +1,138 @@
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
 
-#include "BluetoothSerial.h"  // Bluetooth library for ESP32
-#include <Dabble.h>            // Include Dabble library
+// ===============================
+// BLE UUIDs
+// ===============================
+#define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
-#if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
-#error Bluetooth is not enabled! Please run `make menuconfig` to enable it.
-#endif
-#if !defined(CONFIG_BT_SPP_ENABLED)
-#error Serial Bluetooth not available or not enabled. It is only available for the ESP32 chip.
-#endif
-#if !defined(CONFIG_BT_BLE_ENABLED)
-#error Bluetooth Low Energy (BLE) not available or not enabled. Please run `make menuconfig` to enable BLE support.
-#endif
+BLECharacteristic *pCharacteristic;
+bool deviceConnected = false;
 
-BluetoothSerial ESP_BT;  // Create Bluetooth object
-Terminal Terminal;  // Create Terminal object for Dabble library
+// ===============================
+// BLE Server Callbacks
+// ===============================
+class MyServerCallbacks : public BLEServerCallbacks {
+  void onConnect(BLEServer *pServer) {
+    deviceConnected = true;
+    Serial.println("BLE device connected!");
+  }
 
+  void onDisconnect(BLEServer *pServer) {
+    deviceConnected = false;
+    Serial.println("BLE device disconnected!");
+
+    // Start advertising again
+    pServer->getAdvertising()->start();
+    Serial.println("Waiting for BLE connection...");
+  }
+};
+
+// ===============================
+// BLE Receive Callbacks
+// ===============================
+class MyCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *pCharacteristic) {
+
+    String message = pCharacteristic->getValue();
+
+    if (message.length() > 0) {
+
+      Serial.print("Received from phone: ");
+      Serial.println(message);
+
+      // Send reply back to phone
+      if (deviceConnected) {
+        String reply = "ESP32-S3: Message received - " + message;
+
+        pCharacteristic->setValue(reply.c_str());
+        pCharacteristic->notify();
+
+        Serial.print("Sent to phone: ");
+        Serial.println(reply);
+      }
+    }
+  }
+};
+
+// ===============================
+// SETUP
+// ===============================
 void setup() {
-  Serial.begin(9600);  // Initialize serial communication with the computer
-  ESP_BT.begin("ESP32_Dabble");  // Start Bluetooth with the name "ESP32_Dabble"
 
-  // Set Bluetooth PIN for pairing security
-  ESP_BT.setPin("1234");  // Optional: Set a 4-digit PIN for pairing
+  Serial.begin(115200);
+  delay(1000);
 
-  Dabble.begin(ESP_BT);  // Initialize Dabble library with Bluetooth object
-  Serial.println("Bluetooth is ready. Connect using Dabble app.");
+  Serial.println();
+  Serial.println("==============================");
+  Serial.println("ESP32-S3 BLE Communication");
+  Serial.println("==============================");
+
+  // Initialize BLE
+  BLEDevice::init("ESP32-S3");
+
+  // Create BLE server
+  BLEServer *pServer = BLEDevice::createServer();
+
+  pServer->setCallbacks(new MyServerCallbacks());
+
+  // Create BLE service
+  BLEService *pService =
+      pServer->createService(SERVICE_UUID);
+
+  // Create BLE characteristic
+  pCharacteristic =
+      pService->createCharacteristic(
+          CHARACTERISTIC_UUID,
+          BLECharacteristic::PROPERTY_READ |
+          BLECharacteristic::PROPERTY_WRITE |
+          BLECharacteristic::PROPERTY_NOTIFY
+      );
+
+  // Enable notifications
+  pCharacteristic->addDescriptor(
+      new BLE2902()
+  );
+
+  // Set receive callback
+  pCharacteristic->setCallbacks(
+      new MyCallbacks()
+  );
+
+  // Start BLE service
+  pService->start();
+
+  // Start advertising
+  BLEAdvertising *pAdvertising =
+      BLEDevice::getAdvertising();
+
+  pAdvertising->addServiceUUID(
+      SERVICE_UUID
+  );
+
+  pAdvertising->setScanResponse(true);
+  pAdvertising->setMinPreferred(0x06);
+  pAdvertising->setMinPreferred(0x12);
+
+  BLEDevice::startAdvertising();
+
+  Serial.println("BLE is ready!");
+  Serial.println("Device name: ESP32-S3");
+  Serial.println("Waiting for phone connection...");
 }
 
+// ===============================
+// LOOP
+// ===============================
 void loop() {
-  Dabble.processInput();  // Process incoming data from Dabble app
 
-  // Check if a message is received from the Terminal module
-  if (Terminal.available()) {
-    String message = Terminal.readString();  // Read the message
-    Serial.print("Received from phone: ");
-    Serial.println(message);
-
-    // Send a reply back to the mobile phone via Terminal
-    Terminal.println("ESP32: Message received - " + message);
+  if (deviceConnected) {
+    // BLE communication is handled
+    // by the callbacks.
   }
 
-  // Check if Bluetooth is still connected
-  if (!ESP_BT.hasClient()) {
-    Serial.println("Waiting for Bluetooth connection...");
-    delay(1000);  // Wait a bit before rechecking
-  }
-
-  delay(500);  // Small delay to avoid loop overload
-}Using ESP32 Bluetooth with Dabble App for IoT Communication
+  delay(100);
+}
